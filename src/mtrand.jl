@@ -27,7 +27,7 @@ end
 A multithreaded version of [`Random.randperm!`](@ref)
 
 Construct in `A` a random permutation of length `length(A)`.
-Arg `mask` determines number of parallel partitions to be used.
+Arg `mask` determines number of parallel partitions (mask + 1) to be used.
 Optional arg `rng` specifies a random number generator (see [Random Numbers](@ref)).
 
 # Examples
@@ -48,50 +48,56 @@ julia> mt_randperm!(r, Vector{Int}(undef, 8), 0x3)
  8
 ```
 """
-function mt_randperm!(r::TaskLocalRNG, v::Vector{T}, mask::Tu) where {T<:Integer, Tu<:Union{UInt8, UInt16}}
+function mt_randperm!(r::TaskLocalRNG, A::Array{T}, mask::Tu) where {T<:Integer, Tu<:Union{UInt8, UInt16}}
     nparts = mask + 1
     @assert ispow2(nparts) "invalid mask $(mask)"
 
-    n  = length(v)
+    n  = length(A)
     s  = Random.SamplerType{Tu}()
+    # save current random state
     r0 = copy(r)
 
+    # determine partition sizes
     counts = zeros(Int, nparts + 64, nthreads())
 
-    # Random.seed!(r, seed)
     @threads :static for i in 1:n
         local tid, pid = threadid(), rand(r, s) & mask + 1
         @inbounds counts[pid, tid] += 1
     end
 
+    # cumsum partition sizes
     prev = 0
     for p = 1:nparts, tid = 1:nthreads()
         @inbounds prev = counts[p, tid] += prev
     end
 
+    # recover random state
     copy!(r, r0)
+    # populate partitions
     @threads :static for i in 1:n
         local tid, pid = threadid(), rand(r, s) & mask + 1
         @inbounds local ix = counts[pid, tid]
-        @inbounds v[ix] = i
+        @inbounds A[ix] = i
         @inbounds counts[pid, tid] -= 1
     end
 
+    # shuffle partitions in parallel
     counts[nparts+1, 1] = n
     @threads :static for pid in 1:nparts
-        @inbounds local chunk = view(v, counts[pid,1]+1:counts[pid+1,1])
+        @inbounds local chunk = view(A, counts[pid, 1] + 1:counts[pid + 1, 1])
         _shuffle!(r, chunk)
     end
-    v
+    A
 end
 
-function mt_randperm!(r::TaskLocalRNG, v::Vector{T}) where {T<:Integer}
-    nparts = (length(v) * sizeof(T)) >> 21
-    nparts == 0 && return randperm!(v)
+function mt_randperm!(r::TaskLocalRNG, A::Array{T}) where {T<:Integer}
+    nthreads() == 1 && return randperm!(A)
+    nparts = (length(A) * sizeof(T)) >> 21
+    nparts == 0 && return randperm!(A)
     nparts = nextpow(2, nparts)
-    mask = nparts <= 256 ? UInt8(nparts-1) : UInt16(nparts-1)
-    mt_randperm!(r, v, mask)
+    mask = nparts <= typemax(UInt8) + 1 ? UInt8(nparts - 1) : UInt16(nparts - 1)
+    mt_randperm!(r, A, mask)
 end
 
-mt_randperm!(v::Vector{T}, mask::Tu) where {T<:Integer, Tu<:Union{UInt8, UInt16}} = mt_randperm!(default_rng(), v, mask)
-mt_randperm!(v::Vector{T}) where {T<:Integer} = mt_randperm!(default_rng(), v)
+mt_randperm!(A::Array{T}, mask::Tu) where {T<:Integer, Tu<:Union{UInt8, UInt16}} = mt_randperm!(default_rng(), A, mask)
+mt_randperm!(A::Array{T}) where {T<:Integer} = mt_randperm!(default_rng(), A)
