@@ -1,10 +1,30 @@
 using  Random, Base.Threads
 import Random: Sampler, default_rng, seed!
+import Random: require_one_based_indexing, ltm52, shuffle!
 
 """
-    mt_randperm!([rng=GLOBAL_RNG,] A::Array{<:Integer}, mask::Union{UInt8, UInt16})
+    _shuffle(r::AbstractRNG, a::AbstractArray)
 
-multithreaded version of [`randperm!`](@ref)
+A sligthly faster version of [`Random.shuffle!`](@ref)
+"""
+function _shuffle!(r::AbstractRNG, a::AbstractArray)
+    require_one_based_indexing(a)
+    n = length(a)
+    n <= 1 && return a # nextpow below won't work with n == 0
+    @assert n <= Int64(2)^52
+    mask = nextpow(2, n) - 1
+    for i = n:-1:2
+        (mask >> 1) == i && (mask >>= 1)
+        j = 1 + rand(r, ltm52(i, mask))
+        @inbounds a[i], a[j] = a[j], a[i]
+    end
+    return a
+end
+
+"""
+    mt_randperm!([rng=GLOBAL_RNG,] A::Array{<:Integer}, mask<:Union{UInt8, UInt16})
+
+A multithreaded version of [`Random.randperm!`](@ref)
 
 Construct in `A` a random permutation of length `length(A)`.
 Arg `mask` determines number of parallel partitions to be used.
@@ -60,7 +80,7 @@ function mt_randperm!(r::TaskLocalRNG, v::Vector{T}, mask::Tu) where {T<:Integer
     counts[nparts+1, 1] = n
     @threads :static for pid in 1:nparts
         @inbounds local chunk = view(v, counts[pid,1]+1:counts[pid+1,1])
-        shuffle!(r, chunk)
+        _shuffle!(r, chunk)
     end
     v
 end
