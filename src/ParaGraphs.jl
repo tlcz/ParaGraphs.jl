@@ -1,6 +1,8 @@
 module ParaGraphs
 
 include("mtrand.jl")
-export mt_randperm!
+include("generators.jl")
+
+export mt_randperm!, config_model
 
 end # module
