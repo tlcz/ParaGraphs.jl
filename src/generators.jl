@@ -21,15 +21,15 @@ function config_model(degs::Vector{T}) where T<:Integer
     @info "generate matching"
     @time matching(rows, perm)
     @info "creating graph"
-    @time m = SparseMatrixCSC(n, n, colptr, rows, ones(Int8, length(rows)));
-    @info "sorting"
+    @time m = SparseMatrixCSC(n, n, colptr, rows, ones(Int8, s));
+    @info "sorting columns"
     @time sortCols3!(m)
-    @info "cleansing"
+    @info "trimming zeros"
     @time dropzeros!(m)
 end
 
 function matching(rows::Vector{T}, perm::Vector{T}) where T<:Integer
-    @inbounds @threads :static for i in 1:2:length(perm)
+    @inbounds @threads for i in 1:2:length(perm)
         # p = perm[i] + perm[i+1]
         @inbounds local p, q = perm[i], perm[i+1]
         @inbounds rows[p], rows[q] = rows[q], rows[p]
