@@ -24,7 +24,9 @@ end
 """
     mt_randperm!([rng=GLOBAL_RNG,] A::Array{<:Integer}, mask<:Union{UInt8, UInt16})
 
-A multithreaded version of [`Random.randperm!`](@ref)
+A multithreaded version of [`Random.randperm!`](@ref).
+It works by first partitioning input uniformly at random
+and then shuffling resulting partitions in parallel.
 
 Construct in `A` a random permutation of length `length(A)`.
 Arg `mask` determines number of parallel partitions (mask + 1) to be used.
@@ -49,40 +51,55 @@ julia> mt_randperm!(r, Vector{Int}(undef, 8), 0x3)
 ```
 """
 function mt_randperm!(r::TaskLocalRNG, A::Array{T}, mask::Tu) where {T<:Integer, Tu<:Union{UInt8, UInt16}}
+    # determine number of partitions
     nparts = mask + 1
     @assert ispow2(nparts) "invalid mask $(mask)"
 
     n  = length(A)
     s  = Random.SamplerType{Tu}()
-    # save current random state
-    r0 = copy(r)
 
-    # determine partition sizes
+    # array storing partition boundaries (partition by thread)
+    # partitions map to rows (pid)
+    # threads map to cols (tid)
+    # we add some extra space for each thread
+    # to avoid inter-core synchronization
+    # of cached adjacent mem addresses
     counts = zeros(Int, nparts + 64, nthreads())
 
+    # save initial random state
+    r0 = copy(r)
+    # 1st pass
+    # assign input to partitions uniformly at random
+    # calculate space claimed by each thread in every partition
     @threads :static for i in 1:n
         local tid, pid = threadid(), rand(r, s) & mask + 1
         @inbounds counts[pid, tid] += 1
     end
 
     # cumsum partition sizes
+    # to mark boundaries of space claimed by each thread in every partition
+    # note that the 1st column will contain boundaries of entire partitions
     prev = 0
-    for p = 1:nparts, tid = 1:nthreads()
-        @inbounds prev = counts[p, tid] += prev
+    for pid = 1:nparts, tid = 1:nthreads()
+        @inbounds prev = counts[pid, tid] += prev
     end
+    # mark the end of the last partition
+    counts[nparts + 1, 1] = n
 
     # recover random state
     copy!(r, r0)
-    # populate partitions
+    # 2nd pass
+    # scatter input accross partitions uniformly at random
+    # note that input distribution is identical as in the 1st pass
+    # since we recovered the initial random state
     @threads :static for i in 1:n
         local tid, pid = threadid(), rand(r, s) & mask + 1
-        @inbounds local ix = counts[pid, tid]
-        @inbounds A[ix] = i
+        @inbounds A[counts[pid, tid]] = i
         @inbounds counts[pid, tid] -= 1
     end
 
+    # input is partitioned
     # shuffle partitions in parallel
-    counts[nparts+1, 1] = n
     @threads :static for pid in 1:nparts
         @inbounds local chunk = view(A, counts[pid, 1] + 1:counts[pid + 1, 1])
         _shuffle!(r, chunk)
