@@ -1,4 +1,5 @@
 using  Random, Base.Threads
+import Base: BitInteger
 import Random: Sampler, default_rng, seed!
 import Random: require_one_based_indexing, ltm52, shuffle!
 
@@ -50,7 +51,7 @@ julia> mt_randperm!(r, Vector{Int}(undef, 8), 0x3)
  8
 ```
 """
-function mt_randperm!(r::TaskLocalRNG, A::Array{T}, mask::Tu) where {T<:Integer, Tu<:Union{UInt8, UInt16}}
+function mt_randperm!(r::TaskLocalRNG, A::Array{T}, mask::Tu) where {T<:BitInteger, Tu<:Union{UInt8, UInt16}}
     # determine number of partitions
     nparts = mask + 1
     @assert ispow2(nparts) "invalid mask $(mask)"

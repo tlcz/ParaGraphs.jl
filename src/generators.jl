@@ -1,8 +1,11 @@
 using SparseArrays
-import SparseArrays: AbstractSparseMatrixCSC, getcolptr
+import Random: mt_randperm
+# import SparseArrays: AbstractSparseMatrixCSC, getcolptr
 
 function config_model(degs::Vector{T}) where T<:Integer
-    n, s = length(degs), sum(degs)
+    n = length(degs)
+    @assert n <= typemax(T)
+    s = sum(degs)
     @assert iseven(s) "sum of degrees is odd"
     mn, mx = extrema(degs)
     @assert mn > 0 && mx <= n
@@ -15,11 +18,12 @@ function config_model(degs::Vector{T}) where T<:Integer
     @assert @inbounds colptr[end] == s + 1
     rows = similar(degs, s)
     @time _mt_populate!(rows, colptr)
-    @info "generate permutation"
-    @time perm = mt_randperm!(similar(rows))
 
+    @info "generate permutation"
+    @time perm = mt_randperm(s%T)
     @info "generate matching"
-    @time matching(rows, perm)
+    @time matching(rows, perm) #, 100000000%T)
+
     @info "creating graph"
     @time m = SparseMatrixCSC(n, n, colptr, rows, ones(Int8, s));
     @info "sorting columns"
@@ -28,11 +32,42 @@ function config_model(degs::Vector{T}) where T<:Integer
     @time dropzeros!(m)
 end
 
+function halfperm(N::T) where T<:Integer
+    @time b = bitrand(N)
+    @time p = findall(b)
+    @time l = length(p)
+    @time resize!(p, N)
+    @time map!(~, b, b)
+    @time mt_shuffle!(view(p,l+1:N), findall(b))
+    p
+end
+
 function matching(rows::Vector{T}, perm::Vector{T}) where T<:Integer
-    @inbounds @threads for i in 1:2:length(perm)
+    perm = reshape(perm, :, 2)
+    @inbounds @threads for i in 1:size(perm,1)
         # p = perm[i] + perm[i+1]
-        @inbounds local p, q = perm[i], perm[i+1]
+        @inbounds local p, q = perm[i,1], perm[i,2]
         @inbounds rows[p], rows[q] = rows[q], rows[p]
+    end
+end
+
+function matching(rows::Vector{T}, perm::Vector{T}, k::T) where T<:Integer
+    perm = reshape(perm, :, 2)
+    r = [x:x+k-1 for x in 1:k:length(rows)]
+
+    @threads :static for pr in r for qr in r
+    for i in 1:size(perm,1)
+        @inbounds local p, q = perm[i,1], perm[i,2]
+        p ∈ pr && q ∈ qr && @inbounds rows[p], rows[q] = rows[q], rows[p]
+    end end end
+end
+
+function matching(rows::Vector{T}, colptr::Vector{T}, perm::Vector{T}) where T<:Integer
+    perm = reshape(perm, :, 2)
+    @inbounds @threads for i in 1:size(perm,1)
+        # p = perm[i] + perm[i+1]
+        @inbounds local p, q = perm[i,1], perm[i,2]
+        @inbounds rows[p], rows[q] = searchsortedlast(colptr, q), searchsortedlast(colptr, p)
     end
 end
 
@@ -43,7 +78,7 @@ function _mt_populate!(dest::AbstractArray{T}, colptr::AbstractArray{T}) where {
     end
 end
 
-function sortCols3!(A::AbstractSparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
+function sortCols3!(A::AbstractSparseMatrix{Tv,Ti}) where {Tv,Ti}
     m, n = size(A)
     # colptr = getcolptr(A);
     rowval = rowvals(A);
@@ -51,21 +86,31 @@ function sortCols3!(A::AbstractSparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
 
     @inbounds @threads :static for i = 1:n
         local nzr = nzrange(A, i)
-        local numrows = length(nzr)
+        local nrows = length(nzr)
 
-        numrows <= 1 && continue
+        nrows <= 1 && continue
 
-        alg = numrows <= 16 ? Base.Sort.InsertionSort : Base.Sort.QuickSort
+        alg = nrows <= 16 ? Base.Sort.InsertionSort : Base.Sort.QuickSort
         @inbounds sort!(view(rowval, nzr), 1, length(nzr), alg, Base.Order.Forward)
 
         # coalesce duplicates
-        local rprev,ix = 0,0
+        local rprev, ix = 0%Tv, 0
         @inbounds for j = nzr
-            (rowval[j]>rprev) && (ix=j)
-            rowval[j]==rprev && (nzval[ix]+=nzval[j]; nzval[j]-=nzval[j])
-            rprev = rowval[j]
+            @inbounds (rowval[j]>rprev) && (ix=j)
+            @inbounds rowval[j]==rprev && (nzval[ix]+=nzval[j]; nzval[j]-=nzval[j])
+            @inbounds rprev = rowval[j]
         end
     end
 
     return A
+end
+
+function dupa(v)
+   n = length(v)%eltype(v)
+   b = Base.OneTo(n)
+   for i in b
+       ix = rand(b)
+       x = v[i]
+       v[ix] = i
+   end
 end
